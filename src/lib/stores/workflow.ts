@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { ArazzoSpec, Workflow, Step } from '$lib/types/arazzo';
+import type { ArazzoSpec, Workflow, Step, WorkflowInputs } from '$lib/types/arazzo';
 import { sampleArazzoSpec } from '$lib/data/sample-arazzo';
 import yaml from 'js-yaml';
 
@@ -110,6 +110,33 @@ function createWorkflowStore() {
         ...s,
         sourceDescriptions: s.sourceDescriptions.filter((_, i) => i !== index)
       }));
+    },
+
+    /** Update a source description by index. */
+    updateSource(index: number, patch: Partial<ArazzoSpec['sourceDescriptions'][0]>) {
+      update((s) => {
+        const sourceDescriptions = [...s.sourceDescriptions];
+        sourceDescriptions[index] = { ...sourceDescriptions[index], ...patch };
+        return { ...s, sourceDescriptions };
+      });
+    },
+
+    /** Update workflow inputs schema. */
+    updateWorkflowInputs(workflowIndex: number, inputs: WorkflowInputs) {
+      update((s) => {
+        const workflows = [...s.workflows];
+        workflows[workflowIndex] = { ...workflows[workflowIndex], inputs };
+        return { ...s, workflows };
+      });
+    },
+
+    /** Update workflow outputs. */
+    updateWorkflowOutputs(workflowIndex: number, outputs: Record<string, string>) {
+      update((s) => {
+        const workflows = [...s.workflows];
+        workflows[workflowIndex] = { ...workflows[workflowIndex], outputs };
+        return { ...s, workflows };
+      });
     },
 
     /** Load spec from a YAML or JSON string. */

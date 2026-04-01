@@ -35,6 +35,13 @@ export interface Workflow {
   failureActions?: FailureAction[];
   outputs?: Record<string, string>;
   parameters?: Parameter[];
+  /** Extension: guardrail check groups (from Blueprint pattern) */
+  'x-guardrail-check-groups'?: string[];
+  /** Extension: prohibited fields (from Blueprint pattern) */
+  'x-prohibited-fields'?: {
+    description?: string;
+    fields: string[];
+  };
 }
 
 export interface WorkflowInputs {
@@ -48,6 +55,14 @@ export interface JsonSchemaProperty {
   description?: string;
   format?: string;
   default?: unknown;
+  enum?: string[];
+  /** Extension: marks field as recommended vs required */
+  'x-guardrail-level'?: 'required' | 'recommended';
+  /** For object types */
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  /** For array types */
+  items?: JsonSchemaProperty;
 }
 
 export interface Step {
@@ -75,7 +90,7 @@ export interface Parameter {
 
 export interface RequestBody {
   contentType?: string;
-  payload?: unknown;
+  payload?: Record<string, unknown>;
   replacements?: PayloadReplacement[];
 }
 
@@ -113,4 +128,33 @@ export interface ArazzoComponents {
   parameters?: Record<string, Parameter>;
   successActions?: Record<string, SuccessAction>;
   failureActions?: Record<string, FailureAction>;
+}
+
+// ─── Parsed OpenAPI types (for loaded source specs) ─────────────────
+
+export interface ParsedOpenApiSpec {
+  title: string;
+  version: string;
+  servers?: { url: string; description?: string }[];
+  operations: ParsedOperation[];
+}
+
+export interface ParsedOperation {
+  operationId: string;
+  method: string;
+  path: string;
+  summary?: string;
+  description?: string;
+  parameters: ParsedOperationParam[];
+  requestBodySchema?: Record<string, JsonSchemaProperty>;
+  requestBodyRequired?: string[];
+  responses?: Record<string, { description?: string; schema?: Record<string, JsonSchemaProperty> }>;
+}
+
+export interface ParsedOperationParam {
+  name: string;
+  in: 'path' | 'query' | 'header' | 'cookie';
+  required: boolean;
+  description?: string;
+  schema?: JsonSchemaProperty;
 }

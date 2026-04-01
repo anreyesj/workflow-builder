@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { workflowSpec, selectedWorkflowIndex, selectedStepIndex, specYaml } from '$lib/stores/workflow';
-  import type { Step } from '$lib/types/arazzo';
+  import { workflowSpec, selectedWorkflowIndex, selectedStepIndex } from '$lib/stores/workflow';
+  import { sourceSpecs, allOperations } from '$lib/stores/sourceSpecs';
+  import type { Step, ParsedOperation } from '$lib/types/arazzo';
+  import OperationPicker from './OperationPicker.svelte';
+  import ParameterMapper from './ParameterMapper.svelte';
+  import WorkflowInputsEditor from './WorkflowInputsEditor.svelte';
 
   // ---- Source modal state ----
   let showAddSourceModal = $state(false);
@@ -22,10 +26,33 @@
     showAddSourceModal = false;
   }
 
+  function fetchSource(name: string, url: string) {
+    sourceSpecs.fetchSpec(name, url);
+  }
+
+  function removeSource(index: number) {
+    const src = spec.sourceDescriptions[index];
+    if (src) sourceSpecs.removeSpec(src.name);
+    workflowSpec.removeSource(index);
+  }
+
   // ---- Derived reactive values ----
   let spec = $derived($workflowSpec);
   let workflows = $derived(spec.workflows);
   let selectedWf = $derived(workflows[$selectedWorkflowIndex] ?? workflows[0]);
+  let specStates = $derived($sourceSpecs);
+  let operations = $derived($allOperations);
+
+  // Track which operation each step is bound to (resolved from loaded specs)
+  function findResolvedOperation(step: Step): ParsedOperation | undefined {
+    if (!step.operationId) return undefined;
+    // operationId format: "sourceName.operationId"
+    const dotIdx = step.operationId.indexOf('.');
+    if (dotIdx < 0) return undefined;
+    const srcName = step.operationId.slice(0, dotIdx);
+    const opId = step.operationId.slice(dotIdx + 1);
+    return operations.find((o) => o.sourceName === srcName && o.operation.operationId === opId)?.operation;
+  }
 
   function selectWorkflow(index: number) {
     selectedWorkflowIndex.set(index);
@@ -89,17 +116,32 @@
       <p class="empty-hint">No sources yet. Add an OpenAPI spec URL.</p>
     {/if}
     {#each spec.sourceDescriptions as src, i}
+      {@const state = specStates.specs[src.name]}
       <div class="source-item">
         <div class="source-meta">
           <span class="badge badge--{src.type}">{src.type}</span>
           <span class="source-name">{src.name}</span>
+          {#if state?.status === 'loaded'}
+            <span class="badge badge--loaded" title="Spec loaded — {state.spec?.operations.length ?? 0} operations">✓ {state.spec?.operations.length ?? 0} ops</span>
+          {:else if state?.status === 'loading'}
+            <span class="badge badge--loading">loading…</span>
+          {:else if state?.status === 'error'}
+            <span class="badge badge--error" title={state.error}>✕ error</span>
+          {/if}
         </div>
         <span class="source-url" title={src.url}>{src.url}</span>
-        <button
-          class="btn-remove"
-          title="Remove source"
-          onclick={() => workflowSpec.removeSource(i)}
-        >✕</button>
+        <div class="source-actions">
+          <button
+            class="btn btn--small"
+            title="Fetch and parse this OpenAPI spec"
+            onclick={() => fetchSource(src.name, src.url)}
+          >Fetch & Load</button>
+          <button
+            class="btn-remove"
+            title="Remove source"
+            onclick={() => removeSource(i)}
+          >✕</button>
+        </div>
       </div>
     {/each}
 
@@ -174,6 +216,26 @@
             })}
         />
       </div>
+      <div class="field-group">
+        <label class="field-label" for="wf-description">Description</label>
+        <textarea
+          id="wf-description"
+          class="field-input field-textarea"
+          value={selectedWf.description ?? ''}
+          oninput={(e) =>
+            workflowSpec.updateWorkflow($selectedWorkflowIndex, {
+              description: (e.target as HTMLTextAreaElement).value
+            })}
+        ></textarea>
+      </div>
+
+      <!-- Workflow Inputs -->
+      <div style="margin-top: 0.5rem;">
+        <WorkflowInputsEditor
+          inputs={selectedWf.inputs}
+          onInputsChange={(inputs) => workflowSpec.updateWorkflowInputs($selectedWorkflowIndex, inputs)}
+        />
+      </div>
 
       <!-- Steps -->
       <div class="section-header-row" style="margin-top: 0.75rem;">
@@ -190,6 +252,7 @@
       {/if}
 
       {#each selectedWf.steps as step, si}
+        {@const resolvedOp = findResolvedOperation(step)}
         <div
           class="step-card"
           class:selected={$selectedStepIndex === si}
@@ -202,6 +265,9 @@
           <div class="step-header">
             <span class="step-index">{si + 1}</span>
             <span class="step-id">{step.stepId}</span>
+            {#if resolvedOp}
+              <span class="step-bound-badge" title="Bound to source operation">✓</span>
+            {/if}
             <button
               class="btn-remove"
               title="Remove step"
@@ -213,6 +279,12 @@
           {/if}
           {#if step.operationId}
             <code class="step-op">{step.operationId}</code>
+          {/if}
+          {#if resolvedOp}
+            <span class="step-method-badge">
+              <span class="op-method-mini op-method-mini--{resolvedOp.method.toLowerCase()}">{resolvedOp.method}</span>
+              {resolvedOp.path}
+            </span>
           {/if}
 
           <!-- Expanded step editor when selected -->
@@ -230,28 +302,58 @@
                   })}
               />
               <label class="field-label" for="step-desc-{si}">Description</label>
-              <input
+              <textarea
                 id="step-desc-{si}"
-                class="field-input"
-                type="text"
+                class="field-input field-textarea-sm"
                 value={step.description ?? ''}
                 oninput={(e) =>
                   workflowSpec.updateStep($selectedWorkflowIndex, si, {
-                    description: (e.target as HTMLInputElement).value
+                    description: (e.target as HTMLTextAreaElement).value
                   })}
-              />
-              <label class="field-label" for="step-op-{si}">Operation ID</label>
-              <input
-                id="step-op-{si}"
-                class="field-input"
-                type="text"
-                value={step.operationId ?? ''}
-                placeholder="source.operationId"
-                oninput={(e) =>
+              ></textarea>
+
+              <!-- Operation picker (replaces freetext operationId) -->
+              <label class="field-label">Operation</label>
+              <OperationPicker
+                currentOperationId={step.operationId}
+                currentOperationPath={step.operationPath}
+                onSelect={({ operationId, operationPath, operation, sourceName }) => {
                   workflowSpec.updateStep($selectedWorkflowIndex, si, {
-                    operationId: (e.target as HTMLInputElement).value
-                  })}
+                    operationId,
+                    operationPath
+                  });
+                }}
               />
+
+              <!-- Fallback: manual operationId input if no specs loaded -->
+              {#if operations.length === 0}
+                <label class="field-label" for="step-op-{si}">Operation ID (manual)</label>
+                <input
+                  id="step-op-{si}"
+                  class="field-input"
+                  type="text"
+                  value={step.operationId ?? ''}
+                  placeholder="source.operationId"
+                  oninput={(e) =>
+                    workflowSpec.updateStep($selectedWorkflowIndex, si, {
+                      operationId: (e.target as HTMLInputElement).value
+                    })}
+                />
+              {/if}
+
+              <!-- Parameter & Request Body Mapping -->
+              <ParameterMapper
+                operation={resolvedOp}
+                parameters={step.parameters}
+                requestBody={step.requestBody}
+                workflowInputs={selectedWf.inputs}
+                onParametersChange={(params) =>
+                  workflowSpec.updateStep($selectedWorkflowIndex, si, { parameters: params })}
+                onRequestBodyChange={(body) =>
+                  workflowSpec.updateStep($selectedWorkflowIndex, si, { requestBody: body })}
+              />
+
+              <!-- Success Criteria -->
               {#if step.successCriteria && step.successCriteria.length > 0}
                 <label class="field-label" for="step-criteria-{si}-0">Success Criteria</label>
                 {#each step.successCriteria as criterion, ci}
@@ -269,10 +371,109 @@
                   />
                 {/each}
               {/if}
+
+              <!-- Step Outputs -->
+              <label class="field-label">Step Outputs</label>
+              <div class="outputs-editor">
+                {#each Object.entries(step.outputs ?? {}) as [key, value], oi}
+                  <div class="output-row">
+                    <input
+                      class="field-input output-key"
+                      type="text"
+                      value={key}
+                      placeholder="outputName"
+                      oninput={(e) => {
+                        const newKey = (e.target as HTMLInputElement).value;
+                        const outputs = { ...(step.outputs ?? {}) };
+                        const entries = Object.entries(outputs);
+                        entries[oi] = [newKey, value];
+                        workflowSpec.updateStep($selectedWorkflowIndex, si, { outputs: Object.fromEntries(entries) });
+                      }}
+                    />
+                    <input
+                      class="field-input output-value"
+                      type="text"
+                      value={value}
+                      placeholder="$response.body#/field"
+                      oninput={(e) => {
+                        const outputs = { ...(step.outputs ?? {}) };
+                        outputs[key] = (e.target as HTMLInputElement).value;
+                        workflowSpec.updateStep($selectedWorkflowIndex, si, { outputs });
+                      }}
+                    />
+                    <button
+                      class="btn-remove"
+                      onclick={() => {
+                        const outputs = { ...(step.outputs ?? {}) };
+                        delete outputs[key];
+                        workflowSpec.updateStep($selectedWorkflowIndex, si, { outputs });
+                      }}
+                    >✕</button>
+                  </div>
+                {/each}
+                <button
+                  class="btn btn--small"
+                  onclick={() => {
+                    const outputs = { ...(step.outputs ?? {}), ['newOutput']: '$response.body' };
+                    workflowSpec.updateStep($selectedWorkflowIndex, si, { outputs });
+                  }}
+                >+ Add Output</button>
+              </div>
             </div>
           {/if}
         </div>
       {/each}
+
+      <!-- Workflow Outputs -->
+      {#if selectedWf.steps.length > 0}
+        <div class="section-header-row" style="margin-top: 0.75rem;">
+          <h3 class="subsection-title">Workflow Outputs</h3>
+          <button
+            class="btn-icon"
+            title="Add output"
+            onclick={() => {
+              const outputs = { ...(selectedWf.outputs ?? {}), ['newOutput']: '$steps.stepId.outputs.value' };
+              workflowSpec.updateWorkflowOutputs($selectedWorkflowIndex, outputs);
+            }}
+          >＋</button>
+        </div>
+        {#each Object.entries(selectedWf.outputs ?? {}) as [key, value], oi}
+          <div class="output-row">
+            <input
+              class="field-input output-key"
+              type="text"
+              value={key}
+              placeholder="outputName"
+              oninput={(e) => {
+                const newKey = (e.target as HTMLInputElement).value;
+                const outputs = { ...(selectedWf.outputs ?? {}) };
+                const entries = Object.entries(outputs);
+                entries[oi] = [newKey, value];
+                workflowSpec.updateWorkflowOutputs($selectedWorkflowIndex, Object.fromEntries(entries));
+              }}
+            />
+            <input
+              class="field-input output-value"
+              type="text"
+              value={value}
+              placeholder="$steps.stepId.outputs.value"
+              oninput={(e) => {
+                const outputs = { ...(selectedWf.outputs ?? {}) };
+                outputs[key] = (e.target as HTMLInputElement).value;
+                workflowSpec.updateWorkflowOutputs($selectedWorkflowIndex, outputs);
+              }}
+            />
+            <button
+              class="btn-remove"
+              onclick={() => {
+                const outputs = { ...(selectedWf.outputs ?? {}) };
+                delete outputs[key];
+                workflowSpec.updateWorkflowOutputs($selectedWorkflowIndex, outputs);
+              }}
+            >✕</button>
+          </div>
+        {/each}
+      {/if}
 
       <!-- Remove workflow -->
       {#if workflows.length > 1}
@@ -509,6 +710,45 @@
     right: 0.4rem;
   }
 
+  .source-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.2rem;
+  }
+
+  .btn--small {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.68rem;
+    font-weight: 500;
+    border-radius: 3px;
+    cursor: pointer;
+    border: 1px solid var(--color-accent);
+    background: none;
+    color: var(--color-accent-light);
+    transition: all 0.15s;
+  }
+
+  .btn--small:hover {
+    background: var(--color-accent);
+    color: #fff;
+  }
+
+  .badge--loaded {
+    background: #064e3b;
+    color: #6ee7b7;
+  }
+
+  .badge--loading {
+    background: #713f12;
+    color: #fde68a;
+  }
+
+  .badge--error {
+    background: #7f1d1d;
+    color: #fca5a5;
+  }
+
   /* Workflow tabs */
   .workflow-tabs {
     display: flex;
@@ -593,6 +833,69 @@
     color: var(--color-accent);
     margin: 0.2rem 0 0 1.7rem;
     font-family: var(--font-mono);
+  }
+
+  .step-bound-badge {
+    font-size: 0.6rem;
+    color: #6ee7b7;
+    background: #064e3b;
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  .step-method-badge {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--color-text-secondary);
+    margin: 0.15rem 0 0 1.7rem;
+    font-family: var(--font-mono);
+  }
+
+  .op-method-mini {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0.05rem 0.2rem;
+    border-radius: 2px;
+    margin-right: 0.2rem;
+  }
+
+  .op-method-mini--get { background: #064e3b; color: #6ee7b7; }
+  .op-method-mini--post { background: #1e3a5f; color: #7dd3fc; }
+  .op-method-mini--put { background: #713f12; color: #fde68a; }
+  .op-method-mini--patch { background: #713f12; color: #fde68a; }
+  .op-method-mini--delete { background: #7f1d1d; color: #fca5a5; }
+
+  .field-textarea-sm {
+    min-height: 2.5rem;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 0.78rem;
+  }
+
+  /* Output editor */
+  .outputs-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .output-row {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+  }
+
+  .output-key {
+    flex: 0 0 35%;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .output-value {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
   }
 
   .step-editor {
